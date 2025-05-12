@@ -1,6 +1,6 @@
 services:
-  - type: web
-    name: fartcoin-alert
+  - type: worker
+    name: sunyi-alert
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
