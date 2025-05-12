@@ -1,97 +1,82 @@
+
 import ccxt
 import pandas as pd
-import time
-import requests
-from ta.trend import MACD
+from ta.trend import EMAIndicator, MACD
+from ta.volume import OnBalanceVolumeIndicator
 from ta.momentum import RSIIndicator
-import logging
+import requests
+import time
 import os
 
-# LOG fájl beállítás
-logging.basicConfig(level=logging.INFO)
+# Telegram beállítások
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# TELEGRAM riasztás
-def send_alert(message):
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message
+def send_telegram_alert(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
     }
-    try:
-        requests.post(url, json=payload)
-    except Exception as e:
-        logging.error(f"Telegram üzenetküldési hiba: {e}")
+    requests.post(url, data=data)
 
-# Tőzsde kapcsolat
-exchange = ccxt.gateio({
-    'apiKey': os.getenv("GATEIO_API_KEY"),
-    'secret': os.getenv("GATEIO_SECRET"),
-    'enableRateLimit': True
-})
-
+exchange = ccxt.gateio({'enableRateLimit': True})
 symbol = 'SOL/USDT'
-timeframe = '1m'
+check_interval = 5
 
-# Adatok lekérése
-def fetch_data():
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=50)
-    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+def fetch_tick_data(limit=100):
+    trades = exchange.fetch_trades(symbol, limit=limit)
+    df = pd.DataFrame(trades)
+    df = df[['timestamp', 'price', 'amount']].rename(columns={'price': 'close', 'amount': 'volume'})
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df.set_index('timestamp', inplace=True)
     return df
 
-# Indikátorok kiszámítása
-def compute_indicators(df):
-    macd = MACD(close=df['close'])
-    df['macd'] = macd.macd()
-    df['signal'] = macd.macd_signal()
-    df['rsi'] = RSIIndicator(close=df['close']).rsi()
-    return df
+def fetch_order_book(symbol):
+    order_book = exchange.fetch_order_book(symbol)
+    bid_wall = sum([order[1] for order in order_book['bids'][:10]])
+    ask_wall = sum([order[1] for order in order_book['asks'][:10]])
+    return bid_wall, ask_wall
 
-# BULL jelzés logika
-def is_bullish(df, last_price, last_volume):
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
-    return (
-        last_price > prev['close'] and
-        latest['macd'] > latest['signal'] and
-        latest['macd'] > 0 and
-        latest['rsi'] > 65 and
-        last_volume > latest['volume'] * 1.5
-    )
+def calculate_indicators(df):
+    ema5 = EMAIndicator(close=df['close'], window=5).ema_indicator()
+    ema10 = EMAIndicator(close=df['close'], window=10).ema_indicator()
+    obv = OnBalanceVolumeIndicator(close=df['close'], volume=df['volume']).on_balance_volume()
+    maobv = EMAIndicator(close=obv, window=10).ema_indicator()
+    macd_obj = MACD(close=df['close'])
+    macd = macd_obj.macd()
+    macd_signal = macd_obj.macd_signal()
+    rsi = RSIIndicator(close=df['close']).rsi()
+    return ema5, ema10, obv, maobv, macd, macd_signal, rsi
 
-# Fő ciklus
-def run():
-    cooldown = 0
-    status_log_time = time.time() + 1800  # 30 percenként logol
-    while True:
-        try:
-            df = fetch_data()
-            df = compute_indicators(df)
+def check_alerts(df, ema5, ema10, obv, maobv, macd, macd_signal, rsi):
+    bid_wall, ask_wall = fetch_order_book(symbol)
+    diff_ema = (ema5.iloc[-1] - ema10.iloc[-1]) / ema10.iloc[-1] * 100
+    diff_obv = (obv.iloc[-1] - maobv.iloc[-1]) / maobv.iloc[-1] * 100
+    macd_condition = macd.iloc[-1] > macd_signal.iloc[-1]
+    rsi_value = rsi.iloc[-1]
 
-            ticker = exchange.fetch_ticker(symbol)
-            last_price = ticker['last']
-            last_volume = ticker['quoteVolume']
+    if diff_ema < 0.3 and diff_obv > 0.5 and macd_condition and rsi_value > 60 and bid_wall > ask_wall:
+        message = (
+            f"*Trendfordulás jele (RSI megerősítés!)*\n"
+            f"Ár: {df['close'].iloc[-1]:.2f} USDT\n"
+            f"EMA diff: {diff_ema:.2f}%\n"
+            f"OBV diff: {diff_obv:.2f}%\n"
+            f"RSI: {rsi_value:.2f}"
+        )
+        send_telegram_alert(message)
+        return True
+    return False
 
-            if time.time() > cooldown:
-                if is_bullish(df, last_price, last_volume):
-                    send_alert(f"BULL jelzés: {symbol} ár: {last_price} USDT")
-                    cooldown = time.time() + 90  # 90 mp cooldown
+print("Bot aktiv.")
 
-            if time.time() > status_log_time:
-                logging.info("Figyelés aktív, nincs jelzés.")
-                status_log_time = time.time() + 1800
-
-            time.sleep(3)
-
-        except Exception as e:
-            logging.error(f"Hiba történt: {e}")
-            time.sleep(10)
-
-if __name__ == '__main__':
-    run()
-
-
+while True:
+    try:
+        df = fetch_tick_data()
+        ema5, ema10, obv, maobv, macd, macd_signal, rsi = calculate_indicators(df)
+        check_alerts(df, ema5, ema10, obv, maobv, macd, macd_signal, rsi)
+        time.sleep(check_interval)
+    except Exception as e:
+        print(f"Hiba történt: {e}")
+        time.sleep(check_interval)
 
