@@ -1,3 +1,4 @@
+
 import ccxt
 import pandas as pd
 import time
@@ -10,11 +11,19 @@ import os
 # LOG fájl beállítás
 logging.basicConfig(level=logging.INFO)
 
-# NTFY riasztás
+# TELEGRAM riasztás
 def send_alert(message):
-    url = "https://ntfy.sh/fartcoin-alerts"
-    headers = {"Title": "FARTCOIN"}
-    requests.post(url, data=message.encode(), headers=headers)
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message
+    }
+    try:
+        requests.post(url, json=payload)
+    except Exception as e:
+        logging.error(f"Telegram üzenetküldési hiba: {e}")
 
 # Tőzsde kapcsolat
 exchange = ccxt.gateio({
@@ -69,7 +78,7 @@ def run():
 
             if time.time() > cooldown:
                 if is_bullish(df, last_price, last_volume):
-                    send_alert(f"Valós idejű BULL jelzés: {last_price}")
+                    send_alert(f"BULL jelzés: {symbol} ár: {last_price} USDT")
                     cooldown = time.time() + 90  # 90 mp cooldown
 
             if time.time() > status_log_time:
@@ -84,3 +93,8 @@ def run():
 
 if __name__ == '__main__':
     run()
+
+Tudod mit csinálj most?
+
+1. Töltsd fel ezt a fájlt GitHubra (pl. main.py).
+
