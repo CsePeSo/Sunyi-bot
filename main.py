@@ -1,4 +1,3 @@
-
 import ccxt
 import pandas as pd
 import time
@@ -94,7 +93,5 @@ def run():
 if __name__ == '__main__':
     run()
 
-Tudod mit csinálj most?
 
-1. Töltsd fel ezt a fájlt GitHubra (pl. main.py).
 
