@@ -106,7 +106,7 @@ def check_trigger(df):
     score = compute_score(df)
     if score >= SCORE_THRESHOLD:
         price = df['close'].iloc[-1]
-        msg = f"[SCALP PI]
+        msg = f"[SCALP PI]\nÁr: {price:.4f} USDT\nPontszám: {score}/5"
 Ár: {price:.4f} USDT\nPontszám: {score}/5"
         send_telegram_alert(msg)
         last_alert = now
