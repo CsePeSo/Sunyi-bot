@@ -1,3 +1,4 @@
+
 import asyncio
 import logging
 import pandas as pd
@@ -7,36 +8,35 @@ import os
 import ccxt.async_support as ccxt
 import numpy as np
 from ta.volume import OnBalanceVolumeIndicator
-from ta.momentum import RSIIndicator
 from datetime import datetime
 
-# --- Beállítások ---
+# --- Konfiguráció ---
 SYMBOL = 'PI/USDT'
-SCORE_THRESHOLD = 3  # Pontküszöb
-TIMEFRAME = '5m'    # Időkeret
-RIASZTAS_COOLDOWN = 300  # Másodperc
-FETCH_INTERVAL = 60      # Másodpercenként lekérdezés
+SCORE_THRESHOLD = 3
+TIMEFRAME = '5m'
+RIASZTAS_COOLDOWN = 300
+FETCH_INTERVAL = 60
 
 # --- Telegram értesítés ---
-BOT_TOKEN = os.getenv("TG_API_KEY")
-CHAT_ID = os.getenv("TG_CHAT_ID")
+TG_API_KEY = os.getenv("TG_API_KEY")
+TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
 def send_telegram_alert(message):
-    if not BOT_TOKEN or not CHAT_ID:
+    if not TG_API_KEY or not TG_CHAT_ID:
         logging.warning("Telegram adatok hiányoznak, riasztás nem lett elküldve")
         return
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    url = f"https://api.telegram.org/bot{TG_API_KEY}/sendMessage"
+    payload = {"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
         requests.post(url, json=payload)
         logging.info("Riasztás elküldve")
     except Exception as e:
         logging.error(f"Telegram hiba: {e}")
 
-# --- Loggolás beállítása ---
+# --- Loggolás ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Aszinkron tőzsde kapcsolat ---
+# --- Tőzsdei kapcsolat ---
 def get_exchange():
     return ccxt.gateio({
         'apiKey': os.getenv("GATEIO_API_KEY"),
@@ -44,7 +44,7 @@ def get_exchange():
         'enableRateLimit': True
     })
 
-# --- Legutóbbi gyertya lekérése ---
+# --- Gyertya lekérdezés ---
 async def fetch_latest_candle(exchange, symbol, timeframe=TIMEFRAME):
     try:
         ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=1)
@@ -56,33 +56,28 @@ async def fetch_latest_candle(exchange, symbol, timeframe=TIMEFRAME):
         logging.error(f"Hiba az utolsó gyertya lekérésénél: {e}")
         return pd.DataFrame()
 
-# --- Indikátorok számítása pandas ewm-mel ---
+# --- Indikátorok számítása ---
 def compute_indicators(df):
     if df.empty or len(df) < 30:
         return None
     df = df.copy()
-    # EMA-k
-    df['ema5'] = df['close'].ewm(span=5, adjust=False).mean()
-    df['ema10'] = df['close'].ewm(span=10, adjust=False).mean()
-    df['ema30'] = df['close'].ewm(span=30, adjust=False).mean()
-    # OBV
+    df['ema5'] = df['close'].ewm(span=5).mean()
+    df['ema10'] = df['close'].ewm(span=10).mean()
+    df['ema30'] = df['close'].ewm(span=30).mean()
     df['obv'] = OnBalanceVolumeIndicator(close=df['close'], volume=df['volume']).on_balance_volume()
     df['maobv'] = df['obv'].rolling(window=10).mean()
-    # MACD (kézi számítás)
-    ema12 = df['close'].ewm(span=12, adjust=False).mean()
-    ema26 = df['close'].ewm(span=26, adjust=False).mean()
+    ema12 = df['close'].ewm(span=12).mean()
+    ema26 = df['close'].ewm(span=26).mean()
     df['macd'] = ema12 - ema26
-    df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+    df['macd_signal'] = df['macd'].ewm(span=9).mean()
     df['macd_hist'] = df['macd'] - df['macd_signal']
-    # RSI (kézi számítás)
     delta = df['close'].diff()
     up = delta.clip(lower=0)
     down = -delta.clip(upper=0)
-    ema_up = up.ewm(span=14, adjust=False).mean()
-    ema_down = down.ewm(span=14, adjust=False).mean()
+    ema_up = up.ewm(span=14).mean()
+    ema_down = down.ewm(span=14).mean()
     rs = ema_up / ema_down
     df['rsi'] = 100 - (100 / (1 + rs))
-    # További indikátorok
     df['close_change_pct'] = df['close'].pct_change() * 100
     df['high_low_range'] = (df['high'] - df['low']) / df['low'] * 100
     df['uptrend_score'] = (df['close'] > df['open']).rolling(window=5).sum()
@@ -105,12 +100,9 @@ def is_pullback(df):
     ema_bullish = df['ema5'].iloc[-1] > df['ema10'].iloc[-1]
     ema_turning = df['ema5'].diff().iloc[-1] > 0
     rsi_recovery = df['rsi'].iloc[-1] > 45 and df['rsi'].diff().iloc[-1] > 0
-    is_valid = (significant_drop and recent_recovery and closing_strength and (ema_bullish or ema_turning) and rsi_recovery)
-    if significant_drop and recent_recovery:
-        logging.debug(f"Pullback: drop={drop_pct:.2f}%, EMAbull={ema_bullish}, RSI={df['rsi'].iloc[-1]:.1f}")
-    return is_valid
+    return (significant_drop and recent_recovery and closing_strength and (ema_bullish or ema_turning) and rsi_recovery)
 
-# --- Pontszám számítás ---
+# --- Pontszámítás ---
 def compute_score(df):
     score = 0
     avg_vol = df['volume'].tail(20).mean()
@@ -132,6 +124,7 @@ def compute_score(df):
         score += 0.5
     return score
 
+# --- Trigger ellenőrzés ---
 last_alert = 0
 
 def check_trigger(df):
@@ -150,13 +143,12 @@ def check_trigger(df):
         last_alert = now
         logging.info(f"Riasztás: {msg}")
 
-# --- Fő aszinkron ciklus ---
+# --- Fő program ---
 async def run():
     exchange = get_exchange()
     await exchange.load_markets()
-    initial = "PI figyelés elindult és figyel, mint egy CIA ügynök Red Bull után."
-    logging.info(initial)
-    send_telegram_alert(initial)
+    logging.info("PI/USDT figyelés aktív.")
+    send_telegram_alert("PI figyelés elindult.")
     while True:
         df = await fetch_latest_candle(exchange, SYMBOL, TIMEFRAME)
         indicators = compute_indicators(df)
@@ -168,5 +160,5 @@ if __name__ == '__main__':
     try:
         asyncio.run(run())
     except KeyboardInterrupt:
-        logging.info('Bot leállítva')
+        logging.info('Figyelés leállítva.')
 
