@@ -1,5 +1,4 @@
 ccxt
 pandas
-requests
 ta
-python-dotenv
+requests
