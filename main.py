@@ -1,4 +1,4 @@
-import pandas as pd
+mport pandas as pd
 import time
 import requests
 import logging
@@ -51,11 +51,13 @@ def fetch_tick_data(exchange, symbol, limit=100):
         return None
 
 def create_candle(df):
-    if df is None or df.empty: return None
+    if df is None or df.empty:
+        return None
     end = df.index[-1]
     start = end - pd.Timedelta(seconds=CANDLE_SECONDS)
     window = df.loc[start:end]
-    if window.empty: return None
+    if window.empty:
+        return None
     return pd.DataFrame({
         'open': [window['price'].iloc[0]],
         'high': [window['price'].max()],
@@ -65,7 +67,8 @@ def create_candle(df):
 
 # --- Indikátorok ---
 def compute_indicators(df):
-    if len(df) < 30: return None
+    if len(df) < 30:
+        return None
     df = df.copy()
     df['ema10'] = df['close'].ewm(span=10).mean()
     df['ema30'] = df['close'].ewm(span=30).mean()
@@ -101,13 +104,14 @@ last_alert = 0
 def check_trigger(df):
     global last_alert
     now = time.time()
-    if now - last_alert < RIASZTAS_COOLDOWN: return
-    if not is_pullback(df): return
+    if now - last_alert < RIASZTAS_COOLDOWN:
+        return
+    if not is_pullback(df):
+        return
     score = compute_score(df)
     if score >= SCORE_THRESHOLD:
         price = df['close'].iloc[-1]
         msg = f"[SCALP PI]\nÁr: {price:.4f} USDT\nPontszám: {score}/5"
-Ár: {price:.4f} USDT\nPontszám: {score}/5"
         send_telegram_alert(msg)
         last_alert = now
 
@@ -115,7 +119,7 @@ def check_trigger(df):
 def run():
     exchange = get_exchange()
     candles = pd.DataFrame()
-    send_telegram_alert("PI figyelés elindult")
+    send_telegram_alert("PI figyelés elindult és figyel, mint egy CIA ügynök Red Bull után.")
     while True:
         try:
             ticks = fetch_tick_data(exchange, SYMBOL)
