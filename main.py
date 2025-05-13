@@ -1,94 +1,136 @@
-import ccxt
 import pandas as pd
-from ta.trend import EMAIndicator
-from ta.momentum import RSIIndicator
-from ta.volume import ChaikinMoneyFlowIndicator
-import requests
-import os
 import time
+import requests
+import logging
+import os
+import ccxt
+from ta.volume import OnBalanceVolumeIndicator
+from ta.trend import EMAIndicator, MACD
+from ta.momentum import RSIIndicator
 
-# Exchange setup
-exchange = ccxt.gateio({'enableRateLimit': True})
-symbol = 'SOL/USDT'
-check_interval = 5
+# --- Beállítások ---
+SYMBOL = 'PI/USDT'
+SCORE_THRESHOLD = 3
+CANDLE_SECONDS = 5
+RIASZTAS_COOLDOWN = 60
 
-# Telegram
+# --- Telegram ---
+BOT_TOKEN = os.getenv("TG_API_KEY")
+CHAT_ID = os.getenv("TG_CHAT_ID")
+
 def send_telegram_alert(message):
-    token = os.getenv("TG_API_KEY")
-    chat_id = os.getenv("TG_CHAT_ID")
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
         requests.post(url, json=payload)
+        logging.info("Riasztás elküldve")
     except Exception as e:
-        print(f"Hiba az üzenetküldésnél: {e}")
+        logging.error(f"Telegram hiba: {e}")
 
-# Tick alapú adat lekérés
-def fetch_tick_data(limit=100):
-    trades = exchange.fetch_trades(symbol, limit=limit)
-    df = pd.DataFrame(trades)[['timestamp', 'price', 'amount']]
-    df.rename(columns={'price': 'close', 'amount': 'volume'}, inplace=True)
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    return df
+# --- Loggolás ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Indikátorok kiszámítása
-def calculate_indicators(df):
-    ema5 = EMAIndicator(close=df['close'], window=5).ema_indicator()
-    ema10 = EMAIndicator(close=df['close'], window=10).ema_indicator()
-    rsi = RSIIndicator(close=df['close'], window=14).rsi()
-    cmf = ChaikinMoneyFlowIndicator(
-        high=df['close'],
-        low=df['close'],
-        close=df['close'],
-        volume=df['volume'],
-        window=20
-    ).chaikin_money_flow()
-    return ema5, ema10, rsi, cmf
+# --- Tőzsde kapcsolat ---
+def get_exchange():
+    return ccxt.gateio({
+        'apiKey': os.getenv("GATEIO_API_KEY"),
+        'secret': os.getenv("GATEIO_SECRET"),
+        'enableRateLimit': True
+    })
 
-# Riasztási logika
-last_alert_price = None
-
-def check_alert(df, ema5, ema10, rsi, cmf):
-    global last_alert_price
-    if len(ema5) < 10 or len(rsi) < 10 or len(cmf) < 10:
-        return False
-
-    price = df['close'].iloc[-1]
-    diff_ema = (ema5.iloc[-1] - ema10.iloc[-1]) / ema10.iloc[-1] * 100
-    rsi_value = rsi.iloc[-1]
-    cmf_value = cmf.iloc[-1]
-
-    # Duplikált riasztás elkerülése
-    if last_alert_price:
-        price_diff = ((price - last_alert_price) / last_alert_price) * 100
-        if price_diff < 0.2:
-            return False
-
-    # Riasztási feltételek (egyszerűsítve)
-    if diff_ema > 0.05 and rsi_value > 58 and cmf_value > 0.05:
-        message = (
-            f"*Scalp LONG jelzés!*\n"
-            f"Ár: {price:.2f} USDT\n"
-            f"EMA diff: {diff_ema:.2f}%\n"
-            f"RSI: {rsi_value:.2f}\n"
-            f"CMF: {cmf_value:.4f}"
-        )
-        send_telegram_alert(message)
-        last_alert_price = price
-        return True
-
-    return False
-
-# Indítás
-print("Bot aktiv.")
-send_telegram_alert("Bot elindult és figyel!")
-
-while True:
+# --- Tickből gyertya ---
+def fetch_tick_data(exchange, symbol, limit=100):
     try:
-        df = fetch_tick_data()
-        ema5, ema10, rsi, cmf = calculate_indicators(df)
-        check_alert(df, ema5, ema10, rsi, cmf)
-        time.sleep(check_interval)
+        trades = exchange.fetch_trades(symbol, limit=limit)
+        df = pd.DataFrame(trades)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+        df.set_index('timestamp', inplace=True)
+        return df
     except Exception as e:
-        print(f"Hiba történt: {e}")
-        time.sleep(check_interval)
+        logging.error(f"Tick hiba: {e}")
+        return None
+
+def create_candle(df):
+    if df is None or df.empty: return None
+    end = df.index[-1]
+    start = end - pd.Timedelta(seconds=CANDLE_SECONDS)
+    window = df.loc[start:end]
+    if window.empty: return None
+    return pd.DataFrame({
+        'open': [window['price'].iloc[0]],
+        'high': [window['price'].max()],
+        'low': [window['price'].min()],
+        'close': [window['price'].iloc[-1]],
+        'volume': [window['amount'].sum()]}, index=[end])
+
+# --- Indikátorok ---
+def compute_indicators(df):
+    if len(df) < 30: return None
+    df = df.copy()
+    df['ema10'] = df['close'].ewm(span=10).mean()
+    df['ema30'] = df['close'].ewm(span=30).mean()
+    df['obv'] = OnBalanceVolumeIndicator(close=df['close'], volume=df['volume']).on_balance_volume()
+    df['maobv'] = df['obv'].rolling(window=10).mean()
+    df['macd_hist'] = MACD(close=df['close']).macd_diff()
+    df['rsi'] = RSIIndicator(close=df['close']).rsi()
+    df['vwap'] = (df['close'] * df['volume']).cumsum() / df['volume'].cumsum()
+    return df.dropna()
+
+# --- Pullback + trend check ---
+def is_pullback(df):
+    closes = df['close'].iloc[-5:]
+    pullback = closes.diff().iloc[1:-1].lt(0).sum() >= 2
+    recovery = closes.iloc[-1] > closes.max()
+    trend_ok = df['ema10'].iloc[-1] > df['ema30'].iloc[-1]
+    return pullback and recovery and trend_ok
+
+# --- Pontszám ---
+def compute_score(df):
+    score = 0
+    avg_vol = df['volume'].tail(20).mean()
+    if df['volume'].iloc[-1] > avg_vol * 1.07: score += 1
+    if df['obv'].iloc[-1] > df['maobv'].iloc[-1]: score += 1
+    if df['macd_hist'].iloc[-1] > 0: score += 1
+    if df['rsi'].iloc[-1] > 50: score += 1
+    if df['close'].iloc[-1] > df['vwap'].iloc[-1]: score += 1
+    return score
+
+# --- Trigger check ---
+last_alert = 0
+
+def check_trigger(df):
+    global last_alert
+    now = time.time()
+    if now - last_alert < RIASZTAS_COOLDOWN: return
+    if not is_pullback(df): return
+    score = compute_score(df)
+    if score >= SCORE_THRESHOLD:
+        price = df['close'].iloc[-1]
+        msg = f"[SCALP PI]
+Ár: {price:.4f} USDT\nPontszám: {score}/5"
+        send_telegram_alert(msg)
+        last_alert = now
+
+# --- Fő ciklus ---
+def run():
+    exchange = get_exchange()
+    candles = pd.DataFrame()
+    send_telegram_alert("PI figyelés elindult")
+    while True:
+        try:
+            ticks = fetch_tick_data(exchange, SYMBOL)
+            candle = create_candle(ticks)
+            if candle is not None:
+                candles = pd.concat([candles, candle])
+                if len(candles) > 200:
+                    candles = candles.tail(200)
+                df = compute_indicators(candles)
+                if df is not None:
+                    check_trigger(df)
+            time.sleep(5)
+        except Exception as e:
+            logging.error(f"Fő hurokhiba: {e}")
+            time.sleep(10)
+
+if __name__ == '__main__':
+    run()
