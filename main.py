@@ -72,7 +72,7 @@ def adjust_thresholds(df):
 # Legutóbbi riasztás ár
 last_alert_price = None
 
-# Riasztás logika
+# Riasztás logika (frissítve)
 def check_alerts(df, ema5, ema10, ema50, obv, maobv, macd, macd_signal, rsi):
     global last_alert_price
 
@@ -88,13 +88,29 @@ def check_alerts(df, ema5, ema10, ema50, obv, maobv, macd, macd_signal, rsi):
     rsi_value = rsi.iloc[-1]
     current_price = df['close'].iloc[-1]
 
+    # Duplikált riasztás elleni védelem
     if last_alert_price:
         price_drop = ((current_price - last_alert_price) / last_alert_price) * 100
         if price_drop < 0.3:
             return False
 
-    if diff_ema < 0.05 or diff_obv < 5 or rsi_value < 60:
+    # Feltételek: engedékenyebb szűrők
+    if diff_ema < 0.07 or diff_obv < 4.0 or rsi_value < 58:
         return False
+
+    if diff_ema < adaptive_ema and diff_obv > adaptive_obv and macd_condition and bid_wall > ask_wall:
+        message = (
+            f"*Trendfordulás jele (RSI megerősítés!)*\n"
+            f"Ár: {current_price:.2f} USDT\n"
+            f"EMA diff: {diff_ema:.2f}%\n"
+            f"OBV diff: {diff_obv:.2f}%\n"
+            f"RSI: {rsi_value:.2f}"
+        )
+        send_telegram_alert(message)
+        last_alert_price = current_price
+        return True
+
+    return False
 
     if diff_ema < adaptive_ema and diff_obv > adaptive_obv and macd_condition and bid_wall > ask_wall:
         message = (
