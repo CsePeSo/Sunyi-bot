@@ -17,11 +17,19 @@ check_interval = 5
 volatility_factor = 1.5
 
 # Telegram riasztás
+import os
+
 def send_telegram_alert(message):
-    url = "https://ntfy.sh/fartcoin-alerts"
-    headers = {"Title": "FARTCOIN"}
+    bot_token = os.getenv("TG_API_KEY")
+    chat_id = os.getenv("TG_CHAT_ID")
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
     try:
-        requests.post(url, data=message.encode(), headers=headers)
+        requests.post(url, json=payload)
     except Exception as e:
         print(f"Hiba az üzenetküldésnél: {e}")
 
