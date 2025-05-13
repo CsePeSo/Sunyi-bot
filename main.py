@@ -1,3 +1,4 @@
+
 import asyncio
 import logging
 import pandas as pd
@@ -9,7 +10,7 @@ import numpy as np
 from ta.volume import OnBalanceVolumeIndicator
 from datetime import datetime
 
-# --- KonfigurĂĄciĂł ---
+# --- Konfiguráció ---
 SYMBOL = 'PI/USDT'
 TIMEFRAME = '1m'
 RIASZTAS_COOLDOWN = 180
@@ -22,17 +23,17 @@ TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 # --- Telegram ---
 def send_telegram_alert(message):
     if not TG_API_KEY or not TG_CHAT_ID:
-        logging.warning("Telegram adatok hiĂĄnyoznak, riasztĂĄs nem lett elkĂźldve")
+        logging.warning("Telegram adatok hiányoznak, riasztás nem lett elküldve")
         return
     url = f"https://api.telegram.org/bot{TG_API_KEY}/sendMessage"
     payload = {"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
         requests.post(url, json=payload)
-        logging.info("RiasztĂĄs elkĂźldve")
+        logging.info("Riasztás elküldve")
     except Exception as e:
         logging.error(f"Telegram hiba: {e}")
 
-# --- LoggolĂĄs ---
+# --- Loggolás ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Exchange ---
@@ -52,10 +53,10 @@ async def fetch_latest_candle(exchange, symbol, timeframe=TIMEFRAME):
         df.set_index('timestamp', inplace=True)
         return df
     except Exception as e:
-        logging.error(f"Hiba a gyertyĂĄk lekĂŠrĂŠsĂŠnĂŠl: {e}")
+        logging.error(f"Hiba a gyertyák lekérésénél: {e}")
         return pd.DataFrame()
 
-# --- IndikĂĄtor szĂĄmĂ­tĂĄs ---
+# --- Indikátor számítás ---
 def compute_indicators(df):
     if df.empty or len(df) < 30:
         return None
@@ -110,14 +111,13 @@ def smart_money_trigger(df):
         last['volume'] > df['volume'].tail(20).mean() * 1.5
     ):
         if not monitor_active:
-            msg = f"đ§  [PI/USDT SCALP ĂBERSĂG] â *ElĹzetes aktivitĂĄs ĂŠrzĂŠkelve*
-Ăr: {last['close']:.5f}"
+            msg = f"🧠 [PI/USDT SCALP ÉBERSÉG] – *Előzetes aktivitás érzékelve*\nÁr: {last['close']:.5f}"
             send_telegram_alert(msg)
             monitor_active = True
     else:
         monitor_active = False
 
-# --- Breakout pontszĂĄm ---
+# --- Breakout pontszám ---
 def compute_score(df):
     score = 0
     avg_vol = df['volume'].tail(20).mean()
@@ -148,21 +148,19 @@ def check_main_trigger(df):
     pullback = is_pullback(df)
     if score >= SCORE_THRESHOLD or pullback:
         price = df['close'].iloc[-1]
-        msg = (f"đ [PI/USDT SCALP ĂBERSĂG] â *MegerĹsĂ­tett breakout trigger*
-Ăr: {price:.5f} USDT
-"
-               f"PontszĂĄm: {score:.1f}/{SCORE_THRESHOLD}
-"
+        msg = (f"🚀 [PI/USDT SCALP ÉBERSÉG] – *Megerősített breakout trigger*\n"
+               f"Ár: {price:.5f} USDT\n"
+               f"Pontszám: {score:.1f}/{SCORE_THRESHOLD}\n"
                f"RSI: {df['rsi'].iloc[-1]:.1f} | EMA5/10: {df['ema5'].iloc[-1]:.5f}/{df['ema10'].iloc[-1]:.5f}")
         send_telegram_alert(msg)
         last_alert = now
 
-# --- FĹ ciklus ---
+# --- Fő ciklus ---
 async def run():
     exchange = get_exchange()
     await exchange.load_markets()
-    logging.info("PI breakout + smart money figyelĂŠs elindult.")
-    send_telegram_alert("PI figyelĹ rendszer aktĂ­v (early + trigger)")
+    logging.info("PI breakout + smart money figyelés elindult.")
+    send_telegram_alert("✅ PI/USDT 2-lépcsős scalp figyelő ELINDULT – várja a jeleket!")
     while True:
         df = await fetch_latest_candle(exchange, SYMBOL, TIMEFRAME)
         indicators = compute_indicators(df)
@@ -175,4 +173,5 @@ if __name__ == '__main__':
     try:
         asyncio.run(run())
     except KeyboardInterrupt:
-        logging.info('FigyelĂŠs leĂĄllĂ­tva.')
+        logging.info('Figyelés leállítva.')
+
