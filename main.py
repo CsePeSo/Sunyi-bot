@@ -112,7 +112,7 @@ def check_alerts(df, ema5, ema10, ema50, obv, maobv, macd, macd_signal, rsi):
 
 # Indítás
 print("Bot aktiv.")
-
+send_telegram_alert("Bot elindult és figyel!")  # Telegram üzenet indításkor
 while True:
     try:
         df = fetch_tick_data()
