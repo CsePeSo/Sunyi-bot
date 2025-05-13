@@ -1,42 +1,146 @@
 
-import asyncio
-import logging
-import pandas as pd
-import time
-import requests
 import os
+import requests
+import logging
+import asyncio
 import ccxt.async_support as ccxt
+import pandas as pd
 import numpy as np
-from ta.volume import OnBalanceVolumeIndicator
 from datetime import datetime
+from ta.volume import OnBalanceVolumeIndicator
+from ta.momentum import RSIIndicator, StochasticOscillator
+from ta.trend import EMAIndicator, MACD
 
-# --- Konfiguráció ---
-SYMBOL = 'PI/USDT'
-TIMEFRAME = '1m'
-RIASZTAS_COOLDOWN = 180
-FETCH_INTERVAL = 30
-SCORE_THRESHOLD = 3
+# --- Alapbeállítások ---
+logging.basicConfig(level=logging.INFO)
 
+# --- Telegram küldés ---
 TG_API_KEY = os.getenv("TG_API_KEY")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
-# --- Telegram ---
-def send_telegram_alert(message):
+def send_telegram_alert(message: str):
     if not TG_API_KEY or not TG_CHAT_ID:
         logging.warning("Telegram adatok hiányoznak, riasztás nem lett elküldve")
         return
     url = f"https://api.telegram.org/bot{TG_API_KEY}/sendMessage"
     payload = {"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
-        requests.post(url, json=payload)
-        logging.info("Riasztás elküldve")
+        response = requests.post(url, json=payload)
+        if response.status_code != 200:
+            logging.error(f"Telegram API hiba: {response.text}")
+        else:
+            logging.info("Riasztás elküldve.")
     except Exception as e:
         logging.error(f"Telegram hiba: {e}")
 
-# --- Loggolás ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# --- Indikátorok kiszámítása ---
+def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.dropna().copy()
+    df = df.astype({'close': 'float32', 'volume': 'float32', 'high': 'float32', 'low': 'float32'})
 
-# --- Exchange ---
+    df['ema5'] = EMAIndicator(close=df['close'], window=5).ema_indicator().astype('float32')
+    df['ema10'] = EMAIndicator(close=df['close'], window=10).ema_indicator().astype('float32')
+
+    macd = MACD(close=df['close'], window_slow=26, window_fast=12, window_sign=9)
+    df['macd'] = macd.macd().astype('float32')
+    df['macd_signal'] = macd.macd_signal().astype('float32')
+    df['dif'] = df['macd']
+    df['dea'] = df['macd_signal']
+    df['macd_pct'] = (df['macd'] / df['close'] * 100).astype('float32')
+
+    kdj = StochasticOscillator(high=df['high'], low=df['low'], close=df['close'], window=9, smooth_window=3)
+    df['k'] = kdj.stoch().astype('float32')
+    df['d'] = kdj.stoch_signal().astype('float32')
+    df['j'] = (3 * df['k'] - 2 * df['d']).astype('float32')
+    df['j_smooth'] = df['j'].rolling(window=3).mean().astype('float32')
+
+    obv = OnBalanceVolumeIndicator(close=df['close'], volume=df['volume'])
+    df['obv'] = obv.on_balance_volume().astype('float32')
+    df['wmaobv'] = df['obv'].ewm(span=10, adjust=False).mean().astype('float32')
+
+    df = df[['close', 'volume', 'ema5', 'ema10', 'macd', 'macd_signal', 'macd_pct',
+             'dif', 'dea', 'k', 'd', 'j', 'j_smooth', 'obv', 'wmaobv']]
+    return df.dropna()
+
+# --- Adatok előfeldolgozása ---
+def process_indicators(df_1m, df_5m):
+    if df_1m.empty or df_5m.empty:
+        logging.warning("Hiba: Üres adatkeret érkezett.")
+        return df_1m, df_5m
+    return calculate_indicators(df_1m), calculate_indicators(df_5m)
+
+# --- Snapshot építés ---
+def safe_get_last(df, column):
+    return np.float32(df[column].iloc[-1]) if not df.empty and column in df else None
+
+def build_snapshot(df_1m: pd.DataFrame, df_5m: pd.DataFrame) -> dict:
+    snapshot = {
+        "timestamp": pd.Timestamp.utcnow(),
+        "ema5_avg": np.float32((safe_get_last(df_1m, "ema5") + safe_get_last(df_5m, "ema5")) / 2),
+        "ema10_avg": np.float32((safe_get_last(df_1m, "ema10") + safe_get_last(df_5m, "ema10")) / 2),
+        "ema_gap_avg": np.float32(((safe_get_last(df_1m, "ema5") - safe_get_last(df_1m, "ema10")) +
+                                   (safe_get_last(df_5m, "ema5") - safe_get_last(df_5m, "ema10"))) / 2),
+        "dif_avg": np.float32((safe_get_last(df_1m, "dif") + safe_get_last(df_5m, "dif")) / 2),
+        "dea_avg": np.float32((safe_get_last(df_1m, "dea") + safe_get_last(df_5m, "dea")) / 2),
+        "macd_pct_avg": np.float32((safe_get_last(df_1m, "macd_pct") + safe_get_last(df_5m, "macd_pct")) / 2),
+        "k_avg": np.float32((safe_get_last(df_1m, "k") + safe_get_last(df_5m, "k")) / 2),
+        "d_avg": np.float32((safe_get_last(df_1m, "d") + safe_get_last(df_5m, "d")) / 2),
+        "j_avg": np.float32((safe_get_last(df_1m, "j") + safe_get_last(df_5m, "j")) / 2),
+        "j_smooth_avg": np.float32((safe_get_last(df_1m, "j_smooth") + safe_get_last(df_5m, "j_smooth")) / 2),
+        "obv_avg": np.float32((safe_get_last(df_1m, "obv") + safe_get_last(df_5m, "obv")) / 2),
+        "wmaobv_avg": np.float32((safe_get_last(df_1m, "wmaobv") + safe_get_last(df_5m, "wmaobv")) / 2),
+    }
+    snapshot = {k: 0.0 if v is None or (isinstance(v, float) and np.isnan(v)) else v for k, v in snapshot.items()}
+    return snapshot
+
+# --- Értékelés ---
+def evaluate_snapshot(snapshot: dict, score_threshold: float = 3.0) -> tuple:
+    score = 0.0
+    log = []
+
+    if snapshot["k_avg"] > snapshot["d_avg"] and snapshot["j_avg"] > 55:
+        score += 1.2
+        log.append("KDJ bullish")
+    if snapshot["dif_avg"] > snapshot["dea_avg"]:
+        score += 1.2
+        log.append("MACD DIF > DEA")
+    if snapshot["macd_pct_avg"] > 0.05:
+        score += 0.5
+        log.append("MACD % pozitív")
+    if snapshot["ema5_avg"] > snapshot["ema10_avg"]:
+        score += 1.0
+        log.append("EMA5 > EMA10")
+    if snapshot["ema_gap_avg"] > 0.0004:
+        score += 0.3
+        log.append("EMA GAP pozitív")
+    if snapshot["wmaobv_avg"] > 0:
+        obv_diff = (snapshot["obv_avg"] - snapshot["wmaobv_avg"]) / snapshot["wmaobv_avg"]
+        if obv_diff > 0.01:
+            score += 1.0
+            log.append("OBV jelentős növekedés")
+
+    score = round(score, 2)
+    signal = "BUY" if score >= score_threshold else "HOLD" if score >= score_threshold * 0.8 else "NO_SIGNAL"
+    print(f"[DEBUG] Signal: {signal}, Score: {score}, Log: {log}")
+    return signal, score, log
+
+# --- Feldolgozás + Jelzés küldése ---
+def process_snapshot(snapshot: dict):
+    signal, score, reasons = evaluate_snapshot(snapshot)
+
+    if signal == "BUY":
+        msg = (
+            f"🚀 *PI/USDT SCALP JELZÉS*\n"
+            f"EMA5 átlag: {snapshot['ema5_avg']:.5f}\n"
+            f"Pontszám: {score}/3.0\n"
+            f"Indokok:\n- " + "\n- ".join(reasons)
+        )
+        send_telegram_alert(msg)
+    elif signal == "HOLD":
+        msg = f"⏸️ *PI HOLD jelzés*\nPontszám: {score}/3.0\nIndok: {', '.join(reasons)}"
+        send_telegram_alert(msg)
+
+# --- CCXT és adathívás ---
 def get_exchange():
     return ccxt.gateio({
         'apiKey': os.getenv("GATEIO_API_KEY"),
@@ -44,134 +148,45 @@ def get_exchange():
         'enableRateLimit': True
     })
 
-# --- Candle fetch ---
-async def fetch_latest_candle(exchange, symbol, timeframe=TIMEFRAME):
-    try:
-        ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=30)
-        df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
-        df.set_index('timestamp', inplace=True)
-        return df
-    except Exception as e:
-        logging.error(f"Hiba a gyertyák lekérésénél: {e}")
-        return pd.DataFrame()
-
-# --- Indikátor számítás ---
-def compute_indicators(df):
-    if df.empty or len(df) < 30:
-        return None
-    df = df.copy()
-    df['ema5'] = df['close'].ewm(span=5).mean()
-    df['ema10'] = df['close'].ewm(span=10).mean()
-    df['ema30'] = df['close'].ewm(span=30).mean()
-    df['obv'] = OnBalanceVolumeIndicator(close=df['close'], volume=df['volume']).on_balance_volume()
-    df['maobv'] = df['obv'].rolling(window=10).mean()
-    ema12 = df['close'].ewm(span=12).mean()
-    ema26 = df['close'].ewm(span=26).mean()
-    df['macd'] = ema12 - ema26
-    df['macd_signal'] = df['macd'].ewm(span=9).mean()
-    df['macd_hist'] = df['macd'] - df['macd_signal']
-    delta = df['close'].diff()
-    up = delta.clip(lower=0)
-    down = -delta.clip(upper=0)
-    ema_up = up.ewm(span=14).mean()
-    ema_down = down.ewm(span=14).mean()
-    rs = ema_up / ema_down
-    df['rsi'] = 100 - (100 / (1 + rs))
-    df['close_change_pct'] = df['close'].pct_change() * 100
-    df['candle_body'] = (df['close'] - df['open']) / df['open'] * 100
-    return df.dropna()
-
-# --- Pullback logika ---
-def is_pullback(df):
-    last_n = 10
-    min_idx = df['close'].iloc[-last_n:].idxmin()
-    min_pos = df.index.get_loc(min_idx)
-    recent_min_pos = len(df) - min_pos <= last_n
-    significant_drop = False
-    if recent_min_pos:
-        pre_min_high = df['high'].iloc[max(0, min_pos-last_n):min_pos].max()
-        drop_pct = (pre_min_high - df['close'].iloc[min_pos]) / pre_min_high * 100
-        significant_drop = drop_pct > 1.0
-    recent_recovery = (df['close'].iloc[-3:] > df['open'].iloc[-3:]).sum() >= 2
-    closing_strength = df['close'].iloc[-1] > df['close'].iloc[-3:-1].mean()
-    ema_bullish = df['ema5'].iloc[-1] > df['ema10'].iloc[-1]
-    rsi_recovery = df['rsi'].iloc[-1] > 45 and df['rsi'].diff().iloc[-1] > 0
-    return (significant_drop and recent_recovery and closing_strength and ema_bullish and rsi_recovery)
-
-# --- Smart Money Early Trigger ---
-monitor_active = False
-
-def smart_money_trigger(df):
-    global monitor_active
-    last = df.iloc[-1]
-    if (
-        last['obv'] > df['maobv'].iloc[-1] and
-        last['ema5'] > last['ema10'] and
-        last['volume'] > df['volume'].tail(20).mean() * 1.5
-    ):
-        if not monitor_active:
-            msg = f"🧠 [PI/USDT SCALP ÉBERSÉG] – *Előzetes aktivitás érzékelve*\nÁr: {last['close']:.5f}"
-            send_telegram_alert(msg)
-            monitor_active = True
-    else:
-        monitor_active = False
-
-# --- Breakout pontszám ---
-def compute_score(df):
-    score = 0
-    avg_vol = df['volume'].tail(20).mean()
-    if df['volume'].iloc[-1] > avg_vol * 1.2:
-        score += 1
-    if df['obv'].iloc[-1] > df['obv'].iloc[-2] and df['obv'].iloc[-1] > df['maobv'].iloc[-1]:
-        score += 1
-    if df['macd_hist'].iloc[-1] > 0 and df['macd_hist'].iloc[-1] > df['macd_hist'].iloc[-2]:
-        score += 1
-    if df['rsi'].iloc[-1] > 50 and df['rsi'].iloc[-1] < 70:
-        score += 1
-    if df['close'].iloc[-1] > df['ema5'].iloc[-1] and df['close'].iloc[-1] > df['ema10'].iloc[-1]:
-        score += 1
-    if df['candle_body'].iloc[-1] > 0.5:
-        score += 0.5
-    if df['close_change_pct'].iloc[-1] > 0 and df['close_change_pct'].iloc[-2] > 0:
-        score += 0.5
-    return score
-
-last_alert = 0
-
-def check_main_trigger(df):
-    global last_alert
-    now = time.time()
-    if now - last_alert < RIASZTAS_COOLDOWN:
-        return
-    score = compute_score(df)
-    pullback = is_pullback(df)
-    if score >= SCORE_THRESHOLD or pullback:
-        price = df['close'].iloc[-1]
-        msg = (f"🚀 [PI/USDT SCALP ÉBERSÉG] – *Megerősített breakout trigger*\n"
-               f"Ár: {price:.5f} USDT\n"
-               f"Pontszám: {score:.1f}/{SCORE_THRESHOLD}\n"
-               f"RSI: {df['rsi'].iloc[-1]:.1f} | EMA5/10: {df['ema5'].iloc[-1]:.5f}/{df['ema10'].iloc[-1]:.5f}")
-        send_telegram_alert(msg)
-        last_alert = now
+async def fetch_ohlcv(exchange, symbol, timeframe, limit=50, retries=3):
+    for attempt in range(retries):
+        try:
+            ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+            df.set_index('timestamp', inplace=True)
+            return df
+        except Exception as e:
+            logging.error(f"[{timeframe}] Hiba: {e}")
+            await asyncio.sleep(2)
+    return pd.DataFrame()
 
 # --- Fő ciklus ---
-async def run():
+async def main_loop():
+    SYMBOL = 'PI/USDT'
+    TIMEFRAME_1M = '1m'
+    TIMEFRAME_5M = '5m'
+    INTERVAL = 30
+
     exchange = get_exchange()
     await exchange.load_markets()
-    logging.info("PI breakout + smart money figyelés elindult.")
-    send_telegram_alert("✅ PI/USDT 2-lépcsős scalp figyelő ELINDULT – várja a jeleket!")
-    while True:
-        df = await fetch_latest_candle(exchange, SYMBOL, TIMEFRAME)
-        indicators = compute_indicators(df)
-        if indicators is not None:
-            smart_money_trigger(indicators)
-            check_main_trigger(indicators)
-        await asyncio.sleep(FETCH_INTERVAL)
+    send_telegram_alert("✅ *PI/USDT figyelés elindult!*")
 
-if __name__ == '__main__':
+    while True:
+        df_1m = await fetch_ohlcv(exchange, SYMBOL, TIMEFRAME_1M)
+        df_5m = await fetch_ohlcv(exchange, SYMBOL, TIMEFRAME_5M)
+
+        df_1m, df_5m = process_indicators(df_1m, df_5m)
+        if not df_1m.empty and not df_5m.empty:
+            snapshot = build_snapshot(df_1m, df_5m)
+            process_snapshot(snapshot)
+
+        await asyncio.sleep(INTERVAL)
+
+# --- Indítás ---
+if __name__ == "__main__":
     try:
-        asyncio.run(run())
+        asyncio.run(main_loop())
     except KeyboardInterrupt:
-        logging.info('Figyelés leállítva.')
+        logging.info("Figyelés manuálisan leállítva.")
 
