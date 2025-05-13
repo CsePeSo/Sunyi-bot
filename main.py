@@ -1,24 +1,30 @@
+import asyncio
+import logging
 import pandas as pd
 import time
 import requests
-import logging
 import os
-import ccxt
+import ccxt.async_support as ccxt
+import numpy as np
 from ta.volume import OnBalanceVolumeIndicator
-from ta.trend import EMAIndicator, MACD
 from ta.momentum import RSIIndicator
+from datetime import datetime
 
 # --- Beállítások ---
 SYMBOL = 'PI/USDT'
-SCORE_THRESHOLD = 3
-CANDLE_SECONDS = 5
-RIASZTAS_COOLDOWN = 60
+SCORE_THRESHOLD = 3  # Pontküszöb
+TIMEFRAME = '5m'    # Időkeret
+RIASZTAS_COOLDOWN = 300  # Másodperc
+FETCH_INTERVAL = 60      # Másodpercenként lekérdezés
 
-# --- Telegram ---
+# --- Telegram értesítés ---
 BOT_TOKEN = os.getenv("TG_API_KEY")
 CHAT_ID = os.getenv("TG_CHAT_ID")
 
 def send_telegram_alert(message):
+    if not BOT_TOKEN or not CHAT_ID:
+        logging.warning("Telegram adatok hiányoznak, riasztás nem lett elküldve")
+        return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
@@ -27,10 +33,10 @@ def send_telegram_alert(message):
     except Exception as e:
         logging.error(f"Telegram hiba: {e}")
 
-# --- Loggolás ---
+# --- Loggolás beállítása ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Tőzsde kapcsolat ---
+# --- Aszinkron tőzsde kapcsolat ---
 def get_exchange():
     return ccxt.gateio({
         'apiKey': os.getenv("GATEIO_API_KEY"),
@@ -38,67 +44,94 @@ def get_exchange():
         'enableRateLimit': True
     })
 
-# --- Tickből gyertya ---
-def fetch_tick_data(exchange, symbol, limit=100):
+# --- Legutóbbi gyertya lekérése ---
+async def fetch_latest_candle(exchange, symbol, timeframe=TIMEFRAME):
     try:
-        trades = exchange.fetch_trades(symbol, limit=limit)
-        df = pd.DataFrame(trades)
+        ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=1)
+        df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
         df.set_index('timestamp', inplace=True)
         return df
     except Exception as e:
-        logging.error(f"Tick hiba: {e}")
-        return None
+        logging.error(f"Hiba az utolsó gyertya lekérésénél: {e}")
+        return pd.DataFrame()
 
-def create_candle(df):
-    if df is None or df.empty:
-        return None
-    end = df.index[-1]
-    start = end - pd.Timedelta(seconds=CANDLE_SECONDS)
-    window = df.loc[start:end]
-    if window.empty:
-        return None
-    return pd.DataFrame({
-        'open': [window['price'].iloc[0]],
-        'high': [window['price'].max()],
-        'low': [window['price'].min()],
-        'close': [window['price'].iloc[-1]],
-        'volume': [window['amount'].sum()]}, index=[end])
-
-# --- Indikátorok ---
+# --- Indikátorok számítása pandas ewm-mel ---
 def compute_indicators(df):
-    if len(df) < 30:
+    if df.empty or len(df) < 30:
         return None
     df = df.copy()
-    df['ema10'] = df['close'].ewm(span=10).mean()
-    df['ema30'] = df['close'].ewm(span=30).mean()
+    # EMA-k
+    df['ema5'] = df['close'].ewm(span=5, adjust=False).mean()
+    df['ema10'] = df['close'].ewm(span=10, adjust=False).mean()
+    df['ema30'] = df['close'].ewm(span=30, adjust=False).mean()
+    # OBV
     df['obv'] = OnBalanceVolumeIndicator(close=df['close'], volume=df['volume']).on_balance_volume()
     df['maobv'] = df['obv'].rolling(window=10).mean()
-    df['macd_hist'] = MACD(close=df['close']).macd_diff()
-    df['rsi'] = RSIIndicator(close=df['close']).rsi()
-    df['vwap'] = (df['close'] * df['volume']).cumsum() / df['volume'].cumsum()
+    # MACD (kézi számítás)
+    ema12 = df['close'].ewm(span=12, adjust=False).mean()
+    ema26 = df['close'].ewm(span=26, adjust=False).mean()
+    df['macd'] = ema12 - ema26
+    df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+    df['macd_hist'] = df['macd'] - df['macd_signal']
+    # RSI (kézi számítás)
+    delta = df['close'].diff()
+    up = delta.clip(lower=0)
+    down = -delta.clip(upper=0)
+    ema_up = up.ewm(span=14, adjust=False).mean()
+    ema_down = down.ewm(span=14, adjust=False).mean()
+    rs = ema_up / ema_down
+    df['rsi'] = 100 - (100 / (1 + rs))
+    # További indikátorok
+    df['close_change_pct'] = df['close'].pct_change() * 100
+    df['high_low_range'] = (df['high'] - df['low']) / df['low'] * 100
+    df['uptrend_score'] = (df['close'] > df['open']).rolling(window=5).sum()
+    df['candle_body'] = (df['close'] - df['open']) / df['open'] * 100
     return df.dropna()
 
-# --- Pullback + trend check ---
+# --- Pullback detektálás ---
 def is_pullback(df):
-    closes = df['close'].iloc[-5:]
-    pullback = closes.diff().iloc[1:-1].lt(0).sum() >= 2
-    recovery = closes.iloc[-1] > closes.max()
-    trend_ok = df['ema10'].iloc[-1] > df['ema30'].iloc[-1]
-    return pullback and recovery and trend_ok
+    last_n = 10
+    min_idx = df['close'].iloc[-last_n:].idxmin()
+    min_pos = df.index.get_loc(min_idx)
+    recent_min_pos = len(df) - min_pos <= last_n
+    significant_drop = False
+    if recent_min_pos:
+        pre_min_high = df['high'].iloc[max(0, min_pos-last_n):min_pos].max()
+        drop_pct = (pre_min_high - df['close'].iloc[min_pos]) / pre_min_high * 100
+        significant_drop = drop_pct > 1.5
+    recent_recovery = (df['close'].iloc[-3:] > df['open'].iloc[-3:]).sum() >= 2
+    closing_strength = df['close'].iloc[-1] > df['close'].iloc[-3:-1].mean()
+    ema_bullish = df['ema5'].iloc[-1] > df['ema10'].iloc[-1]
+    ema_turning = df['ema5'].diff().iloc[-1] > 0
+    rsi_recovery = df['rsi'].iloc[-1] > 45 and df['rsi'].diff().iloc[-1] > 0
+    is_valid = (significant_drop and recent_recovery and closing_strength and (ema_bullish or ema_turning) and rsi_recovery)
+    if significant_drop and recent_recovery:
+        logging.debug(f"Pullback: drop={drop_pct:.2f}%, EMAbull={ema_bullish}, RSI={df['rsi'].iloc[-1]:.1f}")
+    return is_valid
 
-# --- Pontszám ---
+# --- Pontszám számítás ---
 def compute_score(df):
     score = 0
     avg_vol = df['volume'].tail(20).mean()
-    if df['volume'].iloc[-1] > avg_vol * 1.07: score += 1
-    if df['obv'].iloc[-1] > df['maobv'].iloc[-1]: score += 1
-    if df['macd_hist'].iloc[-1] > 0: score += 1
-    if df['rsi'].iloc[-1] > 50: score += 1
-    if df['close'].iloc[-1] > df['vwap'].iloc[-1]: score += 1
+    if df['volume'].iloc[-1] > avg_vol * 1.2:
+        score += 1
+    if df['obv'].iloc[-1] > df['obv'].iloc[-2] and df['obv'].iloc[-1] > df['maobv'].iloc[-1]:
+        score += 1
+    if df['macd_hist'].iloc[-1] > 0 and df['macd_hist'].iloc[-1] > df['macd_hist'].iloc[-2]:
+        score += 1
+    if df['rsi'].iloc[-1] > 50 and df['rsi'].iloc[-1] < 70:
+        score += 1
+    elif df['rsi'].iloc[-1] > 45 and df['rsi'].diff().iloc[-1] > 1:
+        score += 0.5
+    if df['close'].iloc[-1] > df['ema5'].iloc[-1] and df['close'].iloc[-1] > df['ema10'].iloc[-1]:
+        score += 1
+    if df['candle_body'].iloc[-1] > 0.5:
+        score += 0.5
+    if df['close_change_pct'].iloc[-1] > 0 and df['close_change_pct'].iloc[-2] > 0:
+        score += 0.5
     return score
 
-# --- Trigger check ---
 last_alert = 0
 
 def check_trigger(df):
@@ -111,30 +144,29 @@ def check_trigger(df):
     score = compute_score(df)
     if score >= SCORE_THRESHOLD:
         price = df['close'].iloc[-1]
-        msg = f"[SCALP PI]\nÁr: {price:.4f} USDT\nPontszám: {score}/5"
+        msg = (f"🚀 [SCALP PI EMELKEDÉS]\nÁr: {price:.5f} USDT\nPontszám: {score:.1f}/{SCORE_THRESHOLD}\n"
+               f"RSI: {df['rsi'].iloc[-1]:.1f}\nEMA5/10: {df['ema5'].iloc[-1]:.5f}/{df['ema10'].iloc[-1]:.5f}")
         send_telegram_alert(msg)
         last_alert = now
+        logging.info(f"Riasztás: {msg}")
 
-# --- Fő ciklus ---
-def run():
+# --- Fő aszinkron ciklus ---
+async def run():
     exchange = get_exchange()
-    candles = pd.DataFrame()
-    send_telegram_alert("PI figyelés elindult és figyel, mint egy CIA ügynök Red Bull után.")
+    await exchange.load_markets()
+    initial = "PI figyelés elindult és figyel, mint egy CIA ügynök Red Bull után."
+    logging.info(initial)
+    send_telegram_alert(initial)
     while True:
-        try:
-            ticks = fetch_tick_data(exchange, SYMBOL)
-            candle = create_candle(ticks)
-            if candle is not None:
-                candles = pd.concat([candles, candle])
-                if len(candles) > 200:
-                    candles = candles.tail(200)
-                df = compute_indicators(candles)
-                if df is not None:
-                    check_trigger(df)
-            time.sleep(5)
-        except Exception as e:
-            logging.error(f"Fő hurokhiba: {e}")
-            time.sleep(10)
+        df = await fetch_latest_candle(exchange, SYMBOL, TIMEFRAME)
+        indicators = compute_indicators(df)
+        if indicators is not None:
+            check_trigger(indicators)
+        await asyncio.sleep(FETCH_INTERVAL)
 
 if __name__ == '__main__':
-    run()
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        logging.info('Bot leállítva')
+
