@@ -5,8 +5,3 @@ services:
     repo: https://github.com/Felhasznalonev/RepoNeve.git
     branch: main
     startCommand: python main.py
-    envVars:
-      - key: TELEGRAM_BOT_TOKEN
-        value: "AZ_TOKENED"
-      - key: TELEGRAM_CHAT_ID
-        value: "A_CHAT_ID"
