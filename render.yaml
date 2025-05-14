@@ -1,8 +1,12 @@
 services:
-  - type: worker
-    name: sunyi-alert
+  - type: web
+    name: IchimokuBot
     env: python
-    plan: free
-    buildCommand: pip install -r requirements.txt
+    repo: https://github.com/Felhasznalonev/RepoNeve.git
+    branch: main
     startCommand: python main.py
-    autoDeploy: true
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        value: "AZ_TOKENED"
+      - key: TELEGRAM_CHAT_ID
+        value: "A_CHAT_ID"
