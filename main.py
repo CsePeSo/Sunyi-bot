@@ -9,27 +9,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # --- Környezeti változók ---
 TOKEN = os.getenv("TG_API_KEY")
 CHAT_ID = os.getenv("TG_CHAT_ID")
+GATE_API_KEY = os.getenv("GATEI_KEY")
+GATE_SECRET_KEY = os.getenv("GATEI_SECRET")
 
-# Nyers API kulcsok beolvasása
-GATE_API_KEY_RAW = os.getenv("GATEI_KEY")
-GATE_SECRET_KEY_RAW = os.getenv("GATEI_SECRET")
-
-# API kulcsok tisztítása és ellenőrzése
-GATE_API_KEY = None
-if GATE_API_KEY_RAW:
-    GATE_API_KEY = GATE_API_KEY_RAW.replace('\n', '').replace('\r', '').strip()
-    if GATE_API_KEY_RAW != GATE_API_KEY:
-        logging.warning("A GATEIO_KEY környezeti változó tisztítva lett (sortörések/szóközök eltávolítva). Kérlek, ellenőrizd a változó értékét a környezetben.")
-else:
-    logging.error("A GATEIO_KEY környezeti változó nincs beállítva vagy üres!")
-
-GATE_SECRET_KEY = None
-if GATE_SECRET_KEY_RAW:
-    GATE_SECRET_KEY = GATE_SECRET_KEY_RAW.replace('\n', '').replace('\r', '').strip()
-    if GATE_SECRET_KEY_RAW != GATE_SECRET_KEY:
-        logging.warning("A GATEIO_SECRET környezeti változó tisztítva lett (sortörések/szóközök eltávolítva). Kérlek, ellenőrizd a változó értékét a környezetben.")
-else:
-    logging.error("A GATEIO_SECRET környezeti változó nincs beállítva vagy üres!")
 
 # --- Telegram üzenet küldése ---
 def send_telegram_message(message):
