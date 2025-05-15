@@ -1,84 +1,84 @@
 import requests
 import pandas as pd
 import os
+import time
+import logging
 
-# 🚀 API és Telegram beállítások (Render környezeti változókból)
+# --- Beállítások ---
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# --- Környezeti változók ---
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-GATE_API_KEY = os.getenv("GATE_API_KEY")
-GATE_SECRET_KEY = os.getenv("GATE_SECRET_KEY")
 
-# 🚀 Gate.io API URL
-API_URL = "https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair=PI_USDT&limit=100&interval=1h"
+# --- Figyelni kívánt párok ---
+TRADING_PAIRS = ["PI_USDT", "SOL_USDT", "XRP_USDT", "PEPE_USDT", "TRUMP_USDT"]
 
-# 🚀 Telegram értesítés küldése
+# --- Telegram üzenetküldés ---
 def send_telegram_message(message):
+    if not TOKEN or not CHAT_ID:
+        logging.warning("Hiányzó Telegram beállítások.")
+        return
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     data = {"chat_id": CHAT_ID, "text": message}
-    requests.post(url, data=data)
+    try:
+        r = requests.post(url, data=data)
+        r.raise_for_status()
+        logging.info("Telegram üzenet elküldve.")
+    except Exception as e:
+        logging.error(f"Telegram hiba: {e}")
 
-# 🚀 Deploy sikeres értesítés
-send_telegram_message("✅ Kereskedési rendszer sikeresen elindult!")
-
-# 🚀 Gate.io API adatlekérés és oszlopkezelés
-def fetch_gateio_data():
-    """Lekéri az aktuális árfolyamokat a Gate.io API-ról és helyesen kezeli az oszlopokat"""
-    headers = {"KEY": GATE_API_KEY, "SECRET": GATE_SECRET_KEY}
-    response = requests.get(API_URL, headers=headers)
-    data = response.json()
-
-    # 🚀 API válasz szerkezetének ellenőrzése
-    print("📊 API válasz:", data[:3])  # Kiírja az első 3 adatpontot
-
-    # 🚀 Manuálisan hozzárendeljük az oszlopneveket
-    columns = ["timestamp", "quote_volume", "open", "high", "low", "close", "trade_count", "completed"]
-    
-    # 🚀 Konvertálás pandas DataFrame-be
-    market_data = pd.DataFrame(data, columns=columns)
-
-    # 🚀 Időbélyegek konvertálása valódi dátummá
-    market_data["timestamp"] = pd.to_datetime(market_data["timestamp"], unit="s")
-
-    # 🚀 Numerikus konverzió az árfolyamokhoz
-    numeric_columns = ["open", "high", "low", "close", "quote_volume"]
-    market_data[numeric_columns] = market_data[numeric_columns].astype(float)
-
-    return market_data
-
-# 🚀 Piaci adatok beolvasása
-market_data = fetch_gateio_data()
-
-# 🚀 EMA indikátorok számítása
-market_data['EMA12'] = market_data['close'].ewm(span=12, adjust=False).mean()
-market_data['EMA26'] = market_data['close'].ewm(span=26, adjust=False).mean()
-market_data['EMA50'] = market_data['close'].ewm(span=50, adjust=False).mean()
-
-# 🚀 MACD indikátor
-market_data['MACD'] = market_data['EMA12'] - market_data['EMA26']
-market_data['Signal'] = market_data['MACD'].ewm(span=9, adjust=False).mean()
-
-# 🚀 RSI indikátor (numerikus konverzió beépítve)
+# --- RSI számítás ---
 def calculate_rsi(data, period=14):
-    data = data.astype(float)  # 🚀 Biztosan numerikus értékek lesznek
     delta = data.diff()
     gain = delta.where(delta > 0, 0).rolling(window=period).mean()
     loss = -delta.where(delta < 0, 0).rolling(window=period).mean()
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-market_data['RSI'] = calculate_rsi(market_data['close'])
+# --- Egy coin adatainak elemzése ---
+def analyze_pair(symbol):
+    url = f"https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair={symbol}&limit=100&interval=1h"
+    try:
+        response = requests.get(url)
+        data = response.json()
 
-# 🚀 Bollinger Bands számítása
-market_data['BB_Middle'] = market_data['close'].rolling(window=20).mean()
-market_data['BB_Upper'] = market_data['BB_Middle'] + (market_data['close'].rolling(window=20).std() * 2)
-market_data['BB_Lower'] = market_data['BB_Middle'] - (market_data['close'].rolling(window=20).std() * 2)
+        columns = ["timestamp", "quote_volume", "open", "high", "low", "close", "trade_count", "completed"]
+        df = pd.DataFrame(data, columns=columns)
+        df["timestamp"] = pd.to_datetime(pd.to_numeric(df["timestamp"]), unit="s")
+        for col in ["open", "high", "low", "close", "quote_volume"]:
+            df[col] = df[col].astype(float)
 
-# 🚀 Jelzések beállítása
-buy_signal = (market_data['EMA12'] > market_data['EMA26']) & (market_data['RSI'] > 50) & (market_data['MACD'] > market_data['Signal'])
-sell_signal = (market_data['EMA12'] < market_data['EMA26']) & (market_data['RSI'] < 50) & (market_data['MACD'] < market_data['Signal'])
+        df['EMA12'] = df['close'].ewm(span=12, adjust=False).mean()
+        df['EMA26'] = df['close'].ewm(span=26, adjust=False).mean()
+        df['MACD'] = df['EMA12'] - df['EMA26']
+        df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        df['RSI'] = calculate_rsi(df['close'])
 
-# 🚀 Ha jelzés van, küldjük Telegramra
-if buy_signal.iloc[-1]:  
-    send_telegram_message("🚀 Vételi jel! Az indikátorok bullish jelet mutatnak.")
-elif sell_signal.iloc[-1]:  
-    send_telegram_message("🔻 Eladási jel! Az indikátorok bearish jelet mutatnak.")
+        buy = (df['EMA12'].iloc[-1] > df['EMA26'].iloc[-1]) and \
+              (df['RSI'].iloc[-1] > 50) and \
+              (df['MACD'].iloc[-1] > df['Signal'].iloc[-1])
+
+        sell = (df['EMA12'].iloc[-1] < df['EMA26'].iloc[-1]) and \
+               (df['RSI'].iloc[-1] < 50) and \
+               (df['MACD'].iloc[-1] < df['Signal'].iloc[-1])
+
+        if buy:
+            send_telegram_message(f"🚀 Vételi jelzés a következő párra: {symbol}")
+        elif sell:
+            send_telegram_message(f"🔻 Eladási jelzés a következő párra: {symbol}")
+
+    except Exception as e:
+        logging.error(f"Hiba a(z) {symbol} párnál: {e}")
+
+# --- Indítási üzenet ---
+send_telegram_message("🤖 Több coin figyelés elindult! A bot aktív Renderen.")
+
+# --- Fő ciklus ---
+while True:
+    for pair in TRADING_PAIRS:
+        analyze_pair(pair)
+        time.sleep(2)  # API limit védelme
+
+    time.sleep(60)  # Újraellenőrzés 1 percenként
+
