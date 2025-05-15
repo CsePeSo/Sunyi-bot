@@ -22,7 +22,7 @@ send_telegram_message("✅ Kereskedési rendszer sikeresen elindult!")
 
 # 🚀 Gate.io API adatlekérés és oszlopkezelés
 def fetch_gateio_data():
-    """Lekéri az aktuális árfolyamokat a Gate.io API-ról és kezeli az oszlopokat"""
+    """Lekéri az aktuális árfolyamokat a Gate.io API-ról és helyesen kezeli az oszlopokat"""
     headers = {"KEY": GATE_API_KEY, "SECRET": GATE_SECRET_KEY}
     response = requests.get(API_URL, headers=headers)
     data = response.json()
@@ -30,15 +30,17 @@ def fetch_gateio_data():
     # 🚀 API válasz szerkezetének ellenőrzése
     print("📊 API válasz:", data[:3])  # Kiírja az első 3 adatpontot
 
-    # 🚀 Oszlopnevek beállítása
-    columns = ["timestamp", "volume", "open", "high", "low", "close", "trade_count", "completed"]
+    # 🚀 Manuálisan hozzárendeljük az oszlopneveket
+    columns = ["timestamp", "quote_volume", "open", "high", "low", "close", "trade_count", "completed"]
+    
+    # 🚀 Konvertálás pandas DataFrame-be
     market_data = pd.DataFrame(data, columns=columns)
 
     # 🚀 Időbélyegek konvertálása valódi dátummá
     market_data["timestamp"] = pd.to_datetime(market_data["timestamp"], unit="s")
 
     # 🚀 Numerikus konverzió az árfolyamokhoz
-    numeric_columns = ["open", "high", "low", "close", "volume"]
+    numeric_columns = ["open", "high", "low", "close", "quote_volume"]
     market_data[numeric_columns] = market_data[numeric_columns].astype(float)
 
     return market_data
