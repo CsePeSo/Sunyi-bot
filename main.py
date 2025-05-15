@@ -1,4 +1,3 @@
-
 import requests
 import pandas as pd
 import os
@@ -8,9 +7,9 @@ import logging
 # --- Log beállítások ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# --- Környezeti változók (Telegram) ---
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# --- Környezeti változók a Render alapján ---
+TOKEN = os.getenv("TG_API_KEY")      # <- Itt módosítottam
+CHAT_ID = os.getenv("TG_CHAT_ID")    # <- Itt módosítottam
 
 # --- Figyelt coin párok ---
 TRADING_PAIRS = ["PI_USDT", "SOL_USDT", "XRP_USDT", "PEPE_USDT", "TRUMP_USDT"]
@@ -75,13 +74,12 @@ def analyze_pair(symbol):
         logging.error(f"Hiba a(z) {symbol} párnál: {e}")
 
 # --- Indulás értesítés ---
-send_telegram_message("🤖 A több coin figyelő bot elindult!")
+send_telegram_message("🤖 A több coin figyelő bot elindult! (TG_API_KEY / TG_CHAT_ID)")
 
 # --- Fő ciklus ---
 while True:
     for pair in TRADING_PAIRS:
         analyze_pair(pair)
-        time.sleep(2)  # API védelem
+        time.sleep(2)
 
-    time.sleep(60)  # 1 perc szünet ciklusonként
-
+    time.sleep(60)
