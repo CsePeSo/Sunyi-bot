@@ -40,6 +40,7 @@ def fetch_data(pair):
         data = r.json()
         columns = ["timestamp", "volume", "open", "high", "low", "close", "not_used", "complete"]
         df = pd.DataFrame(data, columns=columns)
+        df["timestamp"] = pd.to_numeric(df["timestamp"])  # Javított sor: explicit konvertálás numerikus típussá
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s")
         df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
         return df.sort_values("timestamp").reset_index(drop=True)
@@ -58,18 +59,18 @@ def calculate_rsi(series, period=14):
 # --- Score számítás ---
 def calculate_score(df):
     score = 0
-    
+
     # 🚀 EMA trend megerősítés
     if df["EMA12"].iloc[-1] > df["EMA26"].iloc[-1] and df["EMA26"].iloc[-1] > df["EMA26"].iloc[-2]:
-        score += 1  
+        score += 1
 
     # 🚀 MACD keresztvizsgálat
     if df["MACD"].iloc[-1] > df["Signal"].iloc[-1] and df["MACD"].iloc[-2] < df["Signal"].iloc[-2]:
-        score += 1  
+        score += 1
 
     # 🚀 RSI szűrés
     if df["RSI"].iloc[-1] > 60:
-        score += 1  
+        score += 1
 
     # 🚀 EMA50 távolságszűrés
     current_price = df["close"].iloc[-1]
@@ -77,13 +78,13 @@ def calculate_score(df):
     distance_pct = abs((current_price - ema50) / ema50) * 100
 
     if current_price > ema50 and 2 <= distance_pct <= 3:
-        score += 1  
+        score += 1
 
     # 🚀 Volumen megerősítés
     inflow = (df["close"].iloc[-1] - df["open"].iloc[-1]) * df["volume"].iloc[-1]
     avg_inflow = ((df["close"] - df["open"]) * df["volume"]).iloc[-6:-1].mean()
     if inflow > avg_inflow:
-        score += 1  
+        score += 1
 
     return round(score, 2)
 
@@ -98,7 +99,7 @@ for pair in PAIRS:
         df["MACD"] = df["EMA12"] - df["EMA26"]
         df["Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
         df["RSI"] = calculate_rsi(df["close"])
-        
+
         s = calculate_score(df)
         if s >= 3.5:  # csak erősebb jelzéseket küld
             report.append((pair, s))
