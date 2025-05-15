@@ -1,19 +1,18 @@
-
 import requests
 import pandas as pd
 import os
 import logging
 
-# --- Logging ---
+# --- Alap beállítások ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# --- Környezeti változók ---
+# --- API kulcsok ---
 TOKEN = os.getenv("TG_API_KEY")
 CHAT_ID = os.getenv("TG_CHAT_ID")
-GATE_API_KEY = os.getenv("GATEI_KEY")
-GATE_SECRET_KEY = os.getenv("GATEI_SECRET")
+GATE_API_KEY = os.getenv("GATE_API_KEY")
+GATE_SECRET_KEY = os.getenv("GATE_SECRET_KEY")
 
-# --- Telegram üzenet küldése ---
+# --- Telegram értesítés ---
 def send_telegram_message(message):
     if not TOKEN or not CHAT_ID:
         logging.warning("Hiányzó Telegram beállítások!")
@@ -24,77 +23,106 @@ def send_telegram_message(message):
         r = requests.post(url, data=data)
         r.raise_for_status()
     except Exception as e:
-        logging.error(f"Telegram hiba: {e}")
+        logging.warning(f"Telegram hiba: {e}")
 
-# --- Coinpárok ---
-PAIRS = ["PI_USDT", "SOL_USDT", "XRP_USDT", "PEPE_USDT", "TRUMP_USDT"]
+send_telegram_message("🤖 A több coin figyelő bot elindult!\n(TG_API_KEY / TG_CHAT_ID)")
 
-# --- Üdvözlő üzenet ---
-send_telegram_message("🤖 A több coin figyelő bot elindult! (TG_API_KEY / TG_CHAT_ID)")
+# --- Pénzmozgás becslése ---
+def compute_inflow_strength(df):
+    return (df["close"] - df["open"]) * df["volume"]
 
-# --- Adatok lekérése ---
-def fetch_data(pair):
-    url = f"https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair={pair}&limit=30&interval=1h"
-    headers = {"KEY": GATE_API_KEY, "SECRET": GATE_SECRET_KEY}
-    try:
-        r = requests.get(url, headers=headers)
-        data = r.json()
-        columns = ["timestamp", "volume", "open", "high", "low", "close", "not_used", "complete"]
-        df = pd.DataFrame(data, columns=columns)
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s")
-        df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
-        return df.sort_values("timestamp").reset_index(drop=True)
-    except Exception as e:
-        logging.error(f"{pair} lekérés hiba: {e}")
-        return None
+# --- Bullish score számítás ---
+def calculate_score(df):
+    score = 0
+    if df["ema12"].iloc[-1] > df["ema26"].iloc[-1]:
+        score += 1
+    if df["macd"].iloc[-1] > df["macd_signal"].iloc[-1]:
+        score += 1
+    if df["rsi"].iloc[-1] > 55:
+        score += 1
+    if df["close"].iloc[-1] > df["close"].iloc[-2]:
+        score += 0.5
+    if df["ema26"].iloc[-1] > df["ema26"].iloc[-2]:
+        score += 0.5
+    inflow = compute_inflow_strength(df.iloc[-1])
+    avg_inflow = compute_inflow_strength(df.iloc[-6:-1]).mean()
+    if inflow > avg_inflow:
+        score += 1
+    return score
 
-# --- RSI ---
-def calculate_rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0).rolling(window=period).mean()
-    loss = -delta.where(delta < 0, 0).rolling(window=period).mean()
-    rs = gain / loss
+# --- RSI számítás ---
+def calculate_rsi(close, period=14):
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.rolling(window=period).mean()
+    avg_loss = loss.rolling(window=period).mean()
+    rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# --- Score számítás ---
-def score_coin(df):
-    df["EMA12"] = df["close"].ewm(span=12, adjust=False).mean()
-    df["EMA26"] = df["close"].ewm(span=26, adjust=False).mean()
-    df["MACD"] = df["EMA12"] - df["EMA26"]
-    df["Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
-    df["RSI"] = calculate_rsi(df["close"])
+# --- MACD számítás ---
+def calculate_macd(close):
+    ema12 = close.ewm(span=12).mean()
+    ema26 = close.ewm(span=26).mean()
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9).mean()
+    return macd, signal, ema12, ema26
 
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
+# --- Coin lista ---
+COINS = ["PI_USDT", "SOL_USDT", "XRP_USDT", "PEPE_USDT", "TRUMP_USDT"]
 
-    score = 0
-    score += 1 if latest["EMA12"] > latest["EMA26"] else 0
-    score += 1 if latest["MACD"] > latest["Signal"] else 0
-    score += 1 if latest["RSI"] > 55 else 0
-    score += 0.5 if latest["close"] > prev["close"] else 0
-    score += 0.5 if latest["EMA26"] > prev["EMA26"] else 0
+# --- Gate API lekérdezés (30 perces timeframe) ---
+def fetch_candles(coin):
+    url = f"https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair={coin}&limit=100&interval=30m"
+    try:
+        response = requests.get(url)
+        data = response.json()
+        df = pd.DataFrame(data, columns=["timestamp", "volume", "close", "high", "low", "open"])
+        df = df.astype(float)
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s")
+        df.sort_values("timestamp", inplace=True)
 
-    # --- Volumen alapú tőke beáramlás ---
-    inflow = (latest["close"] - latest["open"]) * latest["volume"]
-    prev_inflows = ((df["close"] - df["open"]) * df["volume"]).iloc[-6:-1]
-    avg_inflow = prev_inflows.mean()
-    score += 1 if inflow > avg_inflow else 0
+        df["close_ema12"] = df["close"].ewm(span=12).mean()
+        df["close_ema26"] = df["close"].ewm(span=26).mean()
+        df["ema12"] = df["close_ema12"]
+        df["ema26"] = df["close_ema26"]
+        df["macd"], df["macd_signal"], _, _ = calculate_macd(df["close"])
+        df["rsi"] = calculate_rsi(df["close"])
 
-    return round(score, 2)
+        return df
+    except Exception as e:
+        logging.error(f"Hiba a {coin} lekérdezésnél: {e}")
+        return None
 
-# --- Coinok értékelése ---
-report = []
-for pair in PAIRS:
-    df = fetch_data(pair)
-    if df is not None and len(df) >= 26:
-        s = score_coin(df)
-        if s >= 3.5:  # csak erősebb jelzéseket küld
-            report.append((pair, s))
+# --- Pullback + megerősítő logika ---
+def detect_pullback_recovery(df):
+    if len(df) < 3:
+        return False
+    prev2 = df.iloc[-3]
+    prev1 = df.iloc[-2]
+    current = df.iloc[-1]
 
-# --- Jelentés ---
-if report:
-    ranked = sorted(report, key=lambda x: x[1], reverse=True)
-    message = "📈 *Bullish score alapján erős coinok:*\n"
-    for pair, sc in ranked:
-        message += f"• `{pair}` — score: {sc}\n"
-    send_telegram_message(message)
+    pullback = prev1["close"] < prev1["open"] and ((prev1["open"] - prev1["close"]) / prev1["open"] > 0.003)
+    recovery = current["close"] > current["open"] and current["close"] > prev1["close"]
+    prev_trend = prev2["close"] > prev2["open"]
+
+    return pullback and recovery and prev_trend
+
+# --- Visszatesztelő és értesítő logika ---
+last_alert_price = {}
+
+# --- Main loop ---
+for coin in COINS:
+    df = fetch_candles(coin)
+    if df is None or len(df) < 30:
+        continue
+
+    score = calculate_score(df)
+
+    if detect_pullback_recovery(df):
+        send_telegram_message(f"📈 *Pullback utáni megerősítés* a következő párra:\n`{coin}`")
+        last_alert_price[coin] = df["close"].iloc[-1]
+    elif score >= 4:
+        send_telegram_message(f"📈 *Vételi jelzés* a következő párra:\n`{coin}`\nBullish score: {score}/6")
+        last_alert_price[coin] = df["close"].iloc[-1]
+
