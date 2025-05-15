@@ -11,8 +11,8 @@ TOKEN = os.getenv("TG_API_KEY")
 CHAT_ID = os.getenv("TG_CHAT_ID")
 
 # Nyers API kulcsok beolvasása
-GATE_API_KEY_RAW = os.getenv("GATEIO_KEY")
-GATE_SECRET_KEY_RAW = os.getenv("GATEIO_SECRET")
+GATE_API_KEY_RAW = os.getenv("GATEI_KEY")
+GATE_SECRET_KEY_RAW = os.getenv("GATEI_SECRET")
 
 # API kulcsok tisztítása és ellenőrzése
 GATE_API_KEY = None
