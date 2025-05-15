@@ -9,8 +9,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # --- Környezeti változók ---
 TOKEN = os.getenv("TG_API_KEY")
 CHAT_ID = os.getenv("TG_CHAT_ID")
-GATE_API_KEY = os.getenv("GATEI_KEY")
-GATE_SECRET_KEY = os.getenv("GATEI_SECRET")
+GATE_API_KEY = os.getenv("GATEIO_KEY")
+GATE_SECRET_KEY = os.getenv("GATEIO_SECRET")
 
 # --- Telegram üzenet küldése ---
 def send_telegram_message(message):
