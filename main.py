@@ -1,4 +1,3 @@
-
 import requests
 import pandas as pd
 import os
@@ -7,7 +6,7 @@ import logging
 # --- Logging beállítások ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# --- Környezeti változók (strip a véletlen whitespace eltávolításához) ---
+# --- Környezeti változók ---
 TOKEN           = os.getenv("TG_API_KEY", "").strip()
 CHAT_ID         = os.getenv("TG_CHAT_ID", "").strip()
 GATE_API_KEY    = os.getenv("GATEIO_KEY", "").strip()
@@ -49,7 +48,7 @@ def fetch_data(pair):
 
     url = (
         f"https://api.gateio.ws/api/v4/spot/candlesticks?"
-        f"currency_pair={pair}&limit=30&interval=1h"
+        f"currency_pair={pair}&limit=100&interval=1h"
     )
     try:
         logging.info(f"Adatok lekérése: {pair}")
@@ -82,8 +81,7 @@ def fetch_data(pair):
         df = pd.DataFrame(valid_rows, columns=columns)
 
         # Típuskonverziók
-        df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s")
+        df["timestamp"] = pd.to_datetime(pd.to_numeric(df["timestamp"], errors="coerce"), unit="s")
         for c in ["open", "high", "low", "close", "volume", "currency_volume"]:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
@@ -155,12 +153,13 @@ if GATE_API_KEY and GATE_SECRET_KEY:
         if s >= 3.5:
             report.append((pair, s))
 
-# Jelentés összeállítása és küldése
+# --- Jelentés összeállítása és küldése csak vételi jelzés esetén ---
 if report:
     report.sort(key=lambda x: x[1], reverse=True)
     msg = "📈 *Bullish score alapján erős coinok:*\n\n"
-    for p, s in report:
-        msg += f"• `{p}` — score: *{s}*\n"
+    for pair, score in report:
+        msg += f"• `{pair}` — score: *{score}*\n"
+    send_telegram_message(msg)
+    logging.info("Erős vételi jelzés találva, Telegram-üzenet elküldve.")
 else:
-    msg = "ℹ️ A bot lefutott, de nem talált erős bullish jelzést."
-send_telegram_message(msg)
+    logging.info("A bot lefutott, de nem talált vételi lehetőséget. Telegram nem értesít.")
