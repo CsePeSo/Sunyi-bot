@@ -1,3 +1,4 @@
+
 import requests
 import pandas as pd
 import os
@@ -77,18 +78,16 @@ def fetch_candles(coin):
     try:
         response = requests.get(url)
         data = response.json()
-        df = pd.DataFrame(data, columns=["timestamp", "volume", "close", "high", "low", "open"])
+        df = pd.DataFrame(data, columns=["timestamp", "volume", "close", "high", "low", "open", "unused1", "unused2"])
+        df = df[["timestamp", "volume", "close", "high", "low", "open"]]
         df = df.astype(float)
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s")
         df.sort_values("timestamp", inplace=True)
 
-        df["close_ema12"] = df["close"].ewm(span=12).mean()
-        df["close_ema26"] = df["close"].ewm(span=26).mean()
-        df["ema12"] = df["close_ema12"]
-        df["ema26"] = df["close_ema26"]
+        df["ema12"] = df["close"].ewm(span=12).mean()
+        df["ema26"] = df["close"].ewm(span=26).mean()
         df["macd"], df["macd_signal"], _, _ = calculate_macd(df["close"])
         df["rsi"] = calculate_rsi(df["close"])
-
         return df
     except Exception as e:
         logging.error(f"Hiba a {coin} lekérdezésnél: {e}")
@@ -125,4 +124,3 @@ for coin in COINS:
     elif score >= 4:
         send_telegram_message(f"📈 *Vételi jelzés* a következő párra:\n`{coin}`\nBullish score: {score}/6")
         last_alert_price[coin] = df["close"].iloc[-1]
-
