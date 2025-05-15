@@ -2,6 +2,7 @@ import requests
 import pandas as pd
 import os
 import logging
+import time
 
 # --- Logging beállítások ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -12,7 +13,7 @@ CHAT_ID         = os.getenv("TG_CHAT_ID", "").strip()
 GATE_API_KEY    = os.getenv("GATEIO_KEY", "").strip()
 GATE_SECRET_KEY = os.getenv("GATEIO_SECRET", "").strip()
 
-PAIRS = ["PI_USDT", "SOL_USDT", "TRUMP_USDT", "PEPE_USDT", "XRP_USDT"]  # Pi token hozzáadva
+PAIRS = ["PI_USDT", "SOL_USDT", "TRUMP_USDT", "PEPE_USDT", "XRP_USDT"]
 
 # --- Telegram üzenet küldése ---
 def send_telegram_message(message):
@@ -42,8 +43,10 @@ def fetch_data(pair, interval="5m", limit=100):
         logging.error(f"Adatlekérés hiba {pair} ({interval}): {e}")
         return None
 
-    # Csak az első 7 oszlopot használjuk fel
-    rows = [row[:7] for row in raw if isinstance(row, list) and len(row) >= 7]
+    rows = []
+    for row in raw:
+        if isinstance(row, list) and len(row) >= 7:
+            rows.append(row[:7])
     if not rows:
         logging.error(f"{pair} ({interval}): nincs használható adat.")
         return None
@@ -67,40 +70,42 @@ def calculate_indicators(df):
     loss          = -delta.where(delta < 0, 0.0).rolling(14, min_periods=1).mean()
     rs            = gain / loss
     df["RSI"]   = 100 - (100 / (1 + rs))
-    # On-Balance Volume
+
     obv = [0]
     for i in range(1, len(df)):
-        obv.append(obv[-1] + (df["volume"].iat[i] if df["close"].iat[i] > df["close"].iat[i-1] else -df["volume"].iat[i]))
+        obv.append(
+            obv[-1]
+            + (df["volume"].iat[i] if df["close"].iat[i] > df["close"].iat[i-1] else -df["volume"].iat[i])
+        )
     df["OBV"] = obv
     return df
 
 # --- Mikro-kitörés szűrő ---
 def is_valid_micro_breakout(df):
     return all([
-        df["EMA12"].iat[-1] > df["EMA26"].iat[-1] > df["EMA50"].iat[-1],        # ema bull
-        df["MACD"].iat[-1] > df["Signal"].iat[-1] and df["MACD"].iat[-2] < df["Signal"].iat[-2],  # macd cross
-        df["RSI"].iat[-1] > 55 and df["RSI"].iat[-2] > 50,                                  # rsi
-        df["OBV"].iat[-1] > df["OBV"].rolling(10).mean().iat[-1],                           # obv > ma
-        df["volume"].iat[-1] > df["volume"].iat[-2],                                        # volumen rise
-        df["close"].iat[-1] > df["open"].iat[-1] and df["close"].iat[-2] > df["open"].iat[-2],  # 2 green
-        df["low"].iat[-1] > df["low"].iat[-2]                                               # higher low
+        df["EMA12"].iat[-1] > df["EMA26"].iat[-1] > df["EMA50"].iat[-1],
+        df["MACD"].iat[-1] > df["Signal"].iat[-1] and df["MACD"].iat[-2] < df["Signal"].iat[-2],
+        df["RSI"].iat[-1] > 55 and df["RSI"].iat[-2] > 50,
+        df["OBV"].iat[-1] > df["OBV"].rolling(10).mean().iat[-1] and df["OBV"].iat[-2] > df["OBV"].rolling(10).mean().iat[-2],
+        df["volume"].iat[-1] > df["volume"].iat[-2],
+        df["close"].iat[-1] > df["open"].iat[-1] and df["close"].iat[-2] > df["open"].iat[-2],
+        df["low"].iat[-1] > df["low"].iat[-2]
     ])
 
 # --- Bálna manipuláció szűrő ---
 def is_whale_manipulation(df):
     return sum([
-        (df["high"].iat[-1] - df["close"].iat[-1]) > 2 * (df["close"].iat[-1] - df["open"].iat[-1]),  # wick
-        df["RSI"].iat[-2] > 70 and df["RSI"].iat[-1] < 50,     # rsi dump
-        df["OBV"].iat[-1] < df["OBV"].iat[-2]                  # obv fall
+        (df["high"].iat[-1] - df["close"].iat[-1]) > 2 * (df["close"].iat[-1] - df["open"].iat[-1]),
+        df["RSI"].iat[-2] > 70 and df["RSI"].iat[-1] < 50,
+        df["OBV"].iat[-1] < df["OBV"].iat[-2]
     ]) >= 2
 
-# --- Fő futtató ---
+# --- Egy futás ---
 def main():
-    logging.info("🚀 Mikro-kitöréses sniper bot v2.0 elindult!")
+    logging.info("--- Egy ciklus indult ---")
     report_long = []
 
     for pair in PAIRS:
-        # 1) 30m trendfilter
         df30 = fetch_data(pair, interval="30m", limit=100)
         if df30 is None or len(df30) < 50:
             logging.info(f"{pair} (30m): nem elég adat.")
@@ -114,9 +119,8 @@ def main():
         if score30 >= 3:
             report_long.append((pair, score30))
         else:
-            logging.info(f"{pair} (30m): score {score30} < 3, kihagyva trend long.")
+            logging.info(f"{pair} (30m): score {score30} < 3.")
 
-        # 2) 5m scalpelés
         df5 = fetch_data(pair, interval="5m", limit=100)
         if df5 is None or len(df5) < 50:
             logging.info(f"{pair} (5m): nem elég adat.")
@@ -128,19 +132,17 @@ def main():
             df5["RSI"].iat[-1] > 55,
         ])
         if score5 < 2:
-            logging.info(f"{pair} (5m): score {score5} < 2, kihagyva scalp.")
+            logging.info(f"{pair} (5m): score {score5} < 2.")
             continue
 
-        # 3) Mikro-kitörés + whale-szűrés
         if is_valid_micro_breakout(df5) and not is_whale_manipulation(df5):
             msg  = f"🚀 *Mikro-kitörés észlelve!*\n\n• `{pair}` — 30m score: *{score30}*, 5m score: *{score5}*\n\n"
             msg += "Belépési jelek:\n✔️ EMA bull trend\n✔️ MACD bull cross\n✔️ OBV & volumen spike\n✔️ RSI emelkedés\n"
             msg += "\nEz egy friss bull trend eleje lehet!"
             send_telegram_message(msg)
         else:
-            logging.info(f"{pair}: mikro-kitörés nem validálva vagy whale-manipuláció.")
+            logging.info(f"{pair}: nincs mikro-kitörés vagy whale-szűrés blokkol.")
 
-    # --- Trendkövető long jelzések ---
     if report_long:
         ranked = sorted(report_long, key=lambda x: x[1], reverse=True)
         msg = "📈 *Bullish trendforduló / long lehetőségek:*\n\n"
@@ -148,5 +150,9 @@ def main():
             msg += f"• `{pair}` — 30m score: *{sc}*\n"
         send_telegram_message(msg)
 
+# --- Folyamatos futtató loop ---
 if __name__ == "__main__":
-    main()
+    logging.info("🚀 Mikro-kitöréses sniper bot v2.0 elindult – main loop.")
+    while True:
+        main()
+        time.sleep(60)
