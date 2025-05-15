@@ -110,4 +110,3 @@ if report:
     for pair, sc in ranked:
         message += f"• `{pair}` — score: {sc}\n"
     send_telegram_message(message)
-```
