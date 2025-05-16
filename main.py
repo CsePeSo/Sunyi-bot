@@ -3,13 +3,13 @@ import requests
 import pandas as pd
 from datetime import datetime
 
-# Gate.io API endpoint for Klines
+# Gate.io API végpont (candlestick adatok)
 GATE_IO_URL = "https://api.gateio.ws/api/v4/spot/candlesticks"
 
-# Parameters
-symbol = "PI_USDT"  # Use Gate.io format with underscore
-interval = "900"     # 900 = 15m candles
-limit = 1000          # Max allowed by Gate.io, ~10 nap 10 óra
+# Paraméterek
+symbol = "PI_USDT"       # Coin pair
+interval = "900"         # 15 perces gyertyák (900 másodperc)
+limit = 1000              # Max lekérhető gyertyaszám
 
 params = {
     "currency_pair": symbol,
@@ -17,20 +17,22 @@ params = {
     "limit": limit
 }
 
+# Lekérés
 response = requests.get(GATE_IO_URL, params=params)
 data = response.json()
 
-# Convert to DataFrame
-df = pd.DataFrame(data, columns=[
-    "timestamp", "volume", "close", "high", "low", "open"])
+# Átalakítás DataFrame-é
+columns = ["timestamp", "volume", "close", "high", "low", "open"]
+df = pd.DataFrame(data, columns=columns)
 
-# Convert timestamp to readable format
+# Időbélyeg átalakítása olvasható formára
 df["timestamp"] = pd.to_datetime(df["timestamp"], unit='s')
 
-# Reorder columns
+# Oszlopok új sorrendben: timestamp, open, high, low, close, volume
 df = df[["timestamp", "open", "high", "low", "close", "volume"]]
 
-# Save as CSV
-output_file = "pi_15m_ohlcv.csv"
-df.to_csv(output_file, index=False)
-print(f"CSV exported: {output_file}")
+# CSV fájl mentése
+csv_file = "pi_15m_ohlcv.csv"
+df.to_csv(csv_file, index=False)
+
+print(f"Lekérdezés kész. CSV fájl elmentve: {csv_file}")
