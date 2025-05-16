@@ -2,13 +2,16 @@ import os
 import requests
 import pandas as pd
 from datetime import datetime
+from flask import Flask, send_file
+
+app = Flask(__name__)
 
 # Gate.io API végpont (candlestick adatok)
 GATE_IO_URL = "https://api.gateio.ws/api/v4/spot/candlesticks"
 
 # Paraméterek
 symbol = "PI_USDT"       # Coin pair
-interval = "900"         # 15 perces gyertyák (900 másodperc)
+interval = "900"         # 15 perces gyertyák
 limit = 1000              # Max lekérhető gyertyaszám
 
 params = {
@@ -36,3 +39,15 @@ csv_file = "pi_15m_ohlcv.csv"
 df.to_csv(csv_file, index=False)
 
 print(f"Lekérdezés kész. CSV fájl elmentve: {csv_file}")
+
+@app.route("/")
+def index():
+    return "PI 15m CSV letöltő aktív. Használd a /download végpontot."
+
+@app.route("/download")
+def download():
+    return send_file(csv_file, as_attachment=True)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
