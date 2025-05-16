@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime
 
 # Gate.io API endpoint for Klines
-GATE_IO_URL = "https://api.gate.io/api/v4/spot/candlesticks"
+GATE_IO_URL = "https://api.gateio.ws/api/v4/spot/candlesticks"
 
 # Parameters
 symbol = "PI_USDT"  # Use Gate.io format with underscore
