@@ -1,7 +1,0 @@
-services:
-  - type: web
-    name: IchimokuBot
-    env: python
-    repo: https://github.com/Felhasznalonev/RepoNeve.git
-    branch: main
-    startCommand: python main.py
